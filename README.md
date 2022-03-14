@@ -1,3 +1,5 @@
+Copied from https://gitlab.com/novalis_dt/semantle.
+
 So, this is sort of hacked together from a lot of data sources and the
 code is a mess.  Here's a hello world of how to get up and running.
 

@@ -9,8 +9,6 @@ import numpy as np
 import sqlite3
 import tqdm
 
-from more_itertools import chunked
-
 
 def bfloat(vec):
     """
@@ -24,12 +22,14 @@ def bfloat(vec):
 if __name__ == '__main__':
     model = word2vec.load("GoogleNews-vectors-negative300.bin", encoding="ISO-8859-1", new_lines=False)
 
-    # 3 database files to get around github's 100 Mb file limit
-    con1 = sqlite3.connect("../data/word2vec_a-i.db")
-    con2 = sqlite3.connect("../data/word2vec_j-r.db")
-    con3 = sqlite3.connect("../data/word2vec_s-z.db")
+    # 5 database files to get around github's file size limit
+    con1 = sqlite3.connect("../data/word2vec_a-c.db")
+    con2 = sqlite3.connect("../data/word2vec_d-h.db")
+    con3 = sqlite3.connect("../data/word2vec_i-o.db")
+    con4 = sqlite3.connect("../data/word2vec_p-r.db")
+    con5 = sqlite3.connect("../data/word2vec_s-z.db")
 
-    for con in (con1, con2, con3):
+    for con in (con1, con2, con3, con4, con5):
         con.execute("PRAGMA journal_mode=WAL")
         cur = con.cursor()
         cur.execute("""create table if not exists word2vec (word text PRIMARY KEY, vec blob)""")
@@ -45,12 +45,16 @@ if __name__ == '__main__':
         if not word.isalpha() or not word.islower():
             continue
 
-        if word[0] in "abcdefghi":
+        if word[0] in "abc":
             con = con1
-        elif word[0] in "jklmnopqr":
+        elif word[0] in "defgh":
             con = con2
-        else:  # stuvwxyz
+        elif word[0] in "ijklmno":
             con = con3
+        elif word[0] in "pqr":
+            con = con4
+        else:  # stuvwxyz
+            con = con5
 
         con.execute(
             "insert into word2vec values(?,?)",
@@ -58,7 +62,7 @@ if __name__ == '__main__':
         )
         file.write(word + "\n")
 
-    for con in (con1, con2, con3):
+    for con in (con1, con2, con3, con4, con5):
         con.commit()
         con.close()
     file.close()

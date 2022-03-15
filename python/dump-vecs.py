@@ -3,25 +3,13 @@ import collections.abc
 
 collections.Mapping = collections.abc.Mapping
 
-import gensim.models.keyedvectors as word2vec
+import word2vec
 import numpy as np
 
 import sqlite3
 import tqdm
 
 from more_itertools import chunked
-
-model = word2vec.KeyedVectors.load_word2vec_format(
-    "../GoogleNews-vectors-negative300.bin", binary=True
-)
-
-con = sqlite3.connect("word2vec.db")
-con.execute("PRAGMA journal_mode=WAL")
-cur = con.cursor()
-cur.execute("""create table if not exists word2vec (word text PRIMARY KEY, vec blob)""")
-con.commit()
-
-# import pdb;pdb.set_trace()
 
 
 def bfloat(vec):
@@ -35,12 +23,31 @@ def bfloat(vec):
 
 # many weird words contain #, _ for multi-word
 # some have e-mail addresses, start with numbers, :-), lots of === signs, ...
+def filter_vocab(vocab):
+    return [word for word in vocab if word.isalpha() and word.islower()]
 
-CHUNK_SIZE = 1111
-con.execute("DELETE FROM word2vec")
-for words in chunked(tqdm.tqdm(model.key_to_index), CHUNK_SIZE):
-    with con:
+
+if __name__ == '__main__':
+    model = word2vec.load("GoogleNews-vectors-negative300.bin", encoding="ISO-8859-1", new_lines=False)
+
+    con = sqlite3.connect("../data/word2vec.db")
+    file = open("../data/words.txt", "w")
+
+    con.execute("PRAGMA journal_mode=WAL")
+    cur = con.cursor()
+    cur.execute("""create table if not exists word2vec (word text PRIMARY KEY, vec blob)""")
+    con.commit()
+
+    # import pdb;pdb.set_trace()
+
+    CHUNK_SIZE = 1111
+    con.execute("DELETE FROM word2vec")
+    for words in chunked(tqdm.tqdm(filter_vocab(model.vocab)), CHUNK_SIZE):
         con.executemany(
             "insert into word2vec values(?,?)",
             ((word, bfloat(model[word])) for word in words),
         )
+        file.writelines(word + "\n" for word in words)
+
+    con.close()
+    file.close()

@@ -6,9 +6,8 @@ collections.Mapping = collections.abc.Mapping
 from functools import partial
 import pickle
 
-import gensim.models.keyedvectors as word2vec
-
-import math
+import sqlite3
+import numpy as np
 
 import heapq
 import json
@@ -16,30 +15,12 @@ import json
 from numpy import dot
 from numpy.linalg import norm
 
-import re
 import tqdm.contrib.concurrent
 
 from hashlib import sha1
 
-import code, traceback, signal
-
-# check against all words + phrases in model?
-ALL_WORDS = False
-
-
-model = word2vec.KeyedVectors.load_word2vec_format(
-    "../GoogleNews-vectors-negative300.bin", binary=True
-)
-
 
 def make_words():
-    allowable_words = set()
-    with open("words_alpha.txt") as walpha:
-        for line in walpha.readlines():
-            allowable_words.add(line.strip())
-
-    print("loaded alpha...")
-
     # The banned words are stored obfuscated because I do not want a giant
     # list of banned words to show up in my repository.
     banned_hashes = set()
@@ -47,112 +28,67 @@ def make_words():
         for line in f:
             banned_hashes.add(line.strip())
 
-    simple_word = re.compile("^[a-z]*$")
     words = []
-    for word in model.key_to_index:
-        if ALL_WORDS or (simple_word.match(word) and word in allowable_words):
+    with open("../data/words.txt") as f:
+        for line in f:
+            word = line.strip()
             h = sha1()
-            h.update(("banned" + word).encode("ascii"))
+            try:
+                h.update(("banned" + word).encode("ascii"))
+            except UnicodeEncodeError:
+                # Definitely not banned
+                print(word)
             hash = h.hexdigest()
             if not hash in banned_hashes:
                 words.append(word)
 
     return words
 
-
-words = make_words()
-
-
-def debug(sig, frame):
-    """Interrupt running process, and provide a python prompt for
-    interactive debugging."""
-    d = {"_frame": frame}  # Allow access to frame object.
-    d.update(frame.f_globals)  # Unless shadowed by global
-    d.update(frame.f_locals)
-
-    i = code.InteractiveConsole(d)
-    message = "Signal received : entering python shell.\nTraceback:\n"
-    message += "".join(traceback.format_stack(frame))
-    i.interact(message)
-
-def find_hints(secret, progress=True):
-    if progress:  # works poorly in parellel
-        worditer = tqdm.tqdm(words, leave=False)
-    else:
-        worditer = words
-
+# model vectors are prenormalized
+def find_hints(secret, words, model):
     target_vec = model[secret]
-    target_vec_norm = norm(target_vec)
-
-    #        syns = synonyms.get(secret) or []
     nearest = []
-
-    for word in worditer:
-        #            if word in syns:
-        #                continue
-        #            if secret in (synonyms.get(word) or []):
-        #                # yow, asymmetrical!
-        #                continue
-        #            if word in secret or secret in word:
-        #                continue
+    for word in words:
         vec = model[word]
-        # why not model.wv.similarity(wordA, wordB)?
-        similarity = dot(vec, target_vec) / (norm(vec) * target_vec_norm)
+        similarity = dot(vec, target_vec)
         heapq.heappush(nearest, (similarity, word))
         if len(nearest) > 1000:
             heapq.heappop(nearest)
     nearest.sort()
-    return secret, nearest
+    return nearest[:-1]
 
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGUSR1, debug)  # Register handler
+    # Load the dumped model with normalized vectors
+    model = {}
+    for letter_range in ("a-c", "d-h", "i-o", "p-r", "s-z"):
+        with sqlite3.connect(f"../data/word2vec_{letter_range}.db") as con:
+            cur = con.execute("SELECT * FROM word2vec")
+            for word, vec in cur:
+                vec = np.frombuffer(vec, dtype=np.float32)
+                model[word] = vec / norm(vec)
 
-    # synonyms = {}
+    # List of words that can be hints (anything in the model, minus banned words)
+    words = make_words()
 
-    # with open("moby/words.txt") as moby:
-    #     for line in moby.readlines():
-    #         line = line.strip()
-    #         words = line.split(",")
-    #         word = words[0]
-    #         synonyms[word] = set(words)
+    # Dump hints
+    with open("../data/secret_words.txt") as f, sqlite3.connect("../data/hints.db") as hints_con, sqlite3.connect("../data/hint_similarities.db") as similarities_con:
+        hint_columns = ", ".join(f"hint_{i} TEXT" for i in range(1, 1000))
+        similarity_columns = ", ".join(f"similarity_{i} REAL" for i in range(1, 1000))
+        hints_con.execute(f"CREATE TABLE IF NOT EXISTS hints (secret TEXT PRIMARY KEY, {hint_columns})")
+        similarities_con.execute(f"CREATE TABLE IF NOT EXISTS similarities (secret TEXT PRIMARY KEY, {similarity_columns})")
+        hints_con.execute("DELETE FROM hints")
+        similarities_con.execute("DELETE FROM similarities")
 
-    print("loaded moby...")
-
-    hints = {}
-
-    secrets = []  # to have length for progress bar
-
-    with open("static/assets/js/secretWords.js") as f:
-        for line in f.readlines():
-            line = line.strip()
-            if not '"' in line:
-                continue
-            secrets.append(line.strip('",'))
-
-    CONCURRENCY = True
-    if CONCURRENCY:
-        # may need to limit concurrency for memory reasons
-        # XXX bug: wraps all results into a list, e.g. won't write any until the very end
-        mapper = tqdm.contrib.concurrent.process_map(
-            partial(find_hints, progress=False),
-            secrets,
-            max_workers=12,
-            chunksize=1,
-            total=len(secrets),
-        )
-    else:
-        mapper = tqdm.tqdm(
-            (find_hints(secret) for secret in secrets), total=len(secrets)
-        )
-
-    with open("hints.json", "w+") as hints_file:
-        for secret, nearest in mapper:
-            nearest = [(float(score), word) for score, word in nearest]
-            hints_file.write(json.dumps({"word": secret, "neighbors": nearest}))
-            hints_file.write("\n")
-            hints_file.flush()
-            hints[secret] = nearest
-
-    with open(b"nearest.pickle", "wb") as f:
-        pickle.dump(hints, f)
+        for line in tqdm.tqdm(f.readlines()):
+            secret = line.strip()
+            value_columns = ", ".join("?" * 999)
+            hints = find_hints(secret, words, model)
+            hints_con.execute(
+                f"INSERT INTO hints VALUES ('{secret}', {value_columns})",
+                [hint for similarity, hint in hints]
+            )
+            similarities_con.execute(
+                f"INSERT INTO similarities VALUES ('{secret}', {value_columns})",
+                [similarity for similarity, hint in hints]
+            )

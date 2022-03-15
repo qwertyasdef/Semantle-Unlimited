@@ -10,15 +10,6 @@ import sqlite3
 import tqdm
 
 
-def bfloat(vec):
-    """
-    Half of each floating point vector happens to be zero in the Google model.
-    Possibly using truncated float32 = bfloat. Discard to save space.
-    """
-    vec.dtype = np.int16
-    return vec[1::2].tobytes()
-
-
 if __name__ == '__main__':
     model = word2vec.load("GoogleNews-vectors-negative300.bin", encoding="ISO-8859-1", new_lines=False)
 
@@ -58,7 +49,9 @@ if __name__ == '__main__':
 
         con.execute(
             "insert into word2vec values(?,?)",
-            (word, bfloat(model[word])),
+            # Save float32 instead of float64 to save space
+            # Nothing is lost since the model wasn't using the last few bytes anyway
+            (word, model[word].astype(np.float32)),
         )
         file.write(word + "\n")
 

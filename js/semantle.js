@@ -9,119 +9,302 @@
 */
 'use strict';
 
-let gameOver = false;
-let firstGuess = true;
-let guesses = [];
-let latestGuess = undefined;
-let guessed = new Set();
-let guessCount = 0;
-let model = null;
-const now = Date.now();
-const today = Math.floor(now / 86400000);
-const initialDay = 19021;
-const puzzleNumber = (today - initialDay) % secretWords.length;
-const handleStats = puzzleNumber >= 24;
-const yesterdayPuzzleNumber = (today - initialDay + secretWords.length - 1) % secretWords.length;
+import model from './model.js';
+
+
+/////////////////////////////
+// Initialization
+/////////////////////////////
+
 const storage = window.localStorage;
-let caps = 0;
-let warnedCaps = 0;
-let chrono_forward = 1;
+let secretWords = [];
+let sorting = "similarity";  // chrono, alpha, similarity
+let sort_forward = 1;
 let darkModeMql = window.matchMedia('(prefers-color-scheme: dark)');
 let darkMode = false;
-
-function $(q) {
-    return document.querySelector(q);
-}
-
-function mag(a) {
-    return Math.sqrt(a.reduce(function(sum, val) {
-        return sum + val * val;
-    }, 0));
-}
-
-function dot(f1, f2) {
-    return f1.reduce(function(sum, a, idx) {
-        return sum + a*f2[idx];
-    }, 0);
-}
-
-function getCosSim(f1, f2) {
-    return dot(f1,f2)/(mag(f1)*mag(f2));
-}
+let handleStats = false;  // not implemented
 
 
-function plus(v1, v2) {
-    const out = [];
-    for (let i = 0; i < v1.length; i++) {
-            out.push(v1[i] + v2[i]);
+async function init() {
+    // set up UI
+    document.querySelectorAll(".dialog-close").forEach((el) => {
+        el.innerHTML = ""
+        el.appendChild($("#x-icon").content.cloneNode(true));
+    });
+
+    if (!storage.getItem("readRules")) {
+        openRules();
     }
-    return out;
-}
 
-function minus(v1, v2) {
-    const out = [];
-    for (let i = 0; i < v1.length; i++) {
-        out.push(v1[i] - v2[i]);
+    document.querySelectorAll(".dialog-underlay, .dialog-close, #capitalized-link").forEach((el) => {
+        el.addEventListener('click', () => {
+            document.body.classList.remove('dialog-open', 'rules-open', 'settings-open');
+        });
+    });
+
+    document.querySelectorAll(".dialog").forEach((el) => {
+        el.addEventListener("click", (event) => {
+            // prevents click from propagating to the underlay, which closes the rules
+            event.stopPropagation();
+        });
+    });
+
+    // Dark mode
+    const storagePrefersDarkColorScheme = storage.getItem("prefersDarkColorScheme");
+    if (storagePrefersDarkColorScheme === 'true' || storagePrefersDarkColorScheme === 'false') {
+        toggleDarkMode(storagePrefersDarkColorScheme === 'true');
+    } else {
+        toggleDarkMode(darkModeMql.matches);
+        $("#dark-mode").checked = false;
+        $("#dark-mode").indeterminate = true;
+        darkModeMql.onchange = (e) => {
+            toggleDarkMode(darkModeMql.matches);
+        }
     }
-    return out;
+
+    // set up game
+    model.init();
+    const response = await fetch('data/secret_words.txt');
+    const text = await response.text();
+    secretWords = text.split('\n');
+    startGame();
 }
 
 
-function scale (v, s) {
-    const out = [];
-    for (let i = 0; i < v.length; i++) {
-        out.push(v[i] * s);
-    }
-    return out;
-}
+/////////////////////////////
+// Game
+/////////////////////////////
 
-
-function project_along(v1, v2, t) {
-    const v = minus(v2, v1);
-    const num = dot(minus(t, v1), v);
-    const denom = dot(v,v);
-    return num/denom;
-}
-
-function share() {
-    // We use the stored guesses here, because those are not updated again
-    // once you win -- we don't want to include post-win guesses here.
-    const text = solveStory(JSON.parse(storage.getItem("guesses")), puzzleNumber);
-    const copied = ClipboardJS.copy(text);
-
-    if (copied) {
-        alert("Copied to clipboard");
-    }
-    else {
-        alert("Failed to copy to clipboard");
-    }
-}
-
-const words_selected = [];
-const cache = {};
+let gameOver = false;
 let secret = "";
-let secretVec = null;
+let guesses = {};
+let latestGuess = null;
 let similarityStory = null;
 
-function select(word, secretVec) {
-    /*
-    let model;
-    if (!(word in cache)) {
-        // this can happen on a reload, since we do not store
-        // the vectors in localstorage
-        model = cache[word];
+async function startGame() {
+    gameOver = false;
+    secret = secretWords[Math.floor(Math.random() * secretWords.length)];
+    window.secret = secret;  // for debugging
+    guesses = {};
+    latestGuess = null;
+    similarityStory = await model.getSimilarityStory(secret);
+    $('#similarity-story').innerHTML =
+        `The nearest word has a similarity of <b>${(similarityStory.top * 100).toFixed(2)}</b>,
+        the tenth-nearest has a similarity of ${(similarityStory.top10 * 100).toFixed(2)}, and the
+        one thousandth nearest word has a similarity of ${(similarityStory.rest * 100).toFixed(2)}.`;
+    updateGuesses();
+}
+
+// $('#form').addEventListener('submit', async function(event) {
+//     event.preventDefault();
+//     if (secretVec === null) {
+//         secretVec = (await getModel(secret)).vec;
+//     }
+//     $('#guess').focus();
+//     $('#error').textContent = "";
+//     let guess = $('#guess').value.trim().replace("!", "").replace("*", "");
+//     if (!guess) {
+//         return false;
+//     }
+//     if ($("#lower").checked) {
+//         guess = guess.toLowerCase();
+//     }
+
+//     if (typeof unbritish !== 'undefined' && unbritish.hasOwnProperty(guess)) {
+//         guess = unbritish[guess];
+//     }
+
+//     $('#guess').value = "";
+
+//     const guessData = await getModel(guess);
+//     if (!guessData) {
+//         $('#error').textContent = `I don't know the word ${guess}.`;
+//         return false;
+//     }
+
+//     let percentile = guessData.percentile;
+
+//     const guessVec = guessData.vec;
+
+//     cache[guess] = guessData;
+
+//     let similarity = getCosSim(guessVec, secretVec) * 100.0;
+//     if (!guessed.has(guess)) {
+//         if (!gameOver) {
+//             guessCount += 1;
+//         }
+//         guessed.add(guess);
+
+//         const newEntry = [similarity, guess, percentile, guessCount];
+//         guesses.push(newEntry);
+
+//         if (handleStats) {
+//             const stats = getStats();
+//             if (!gameOver) {
+//                 stats['totalGuesses'] += 1;
+//             }
+//             storage.setItem('stats', JSON.stringify(stats));
+//         }
+//     }
+//     guesses.sort(function(a, b){return b[0]-a[0]});
+
+//     if (!gameOver) {
+//         saveGame(-1, -1);
+//     }
+
+//     chrono_forward = 1;
+
+//     latestGuess = guess;
+//     updateGuesses();
+
+//     if (guess.toLowerCase() === secret && !gameOver) {
+//         endGame(true, true);
+//     }
+//     return false;
+// });
+
+async function makeGuess(guess) {
+    $('#guess').value = "";
+    $('#guess').focus();
+    $('#error').textContent = "";
+
+    guess = guess.toLowerCase();
+
+    if (!(guess in guesses)) {
+        const [similarity, percentile] = await model.getSimilarity(secret, guess);
+        if (similarity === null) {
+            $('#error').textContent = `I don't know the word ${guess}.`;
+            return false;
+        }
+        const newEntry = [similarity, guess, percentile, Object.keys(guesses).length + 1];
+        guesses[guess] = newEntry;
+    }
+
+    latestGuess = guesses[guess];
+    updateGuesses();
+
+    if (guess === secret) {
+        endGame(true, true);
+    }
+}
+
+function endGame(won, countStats) {
+    let stats;
+    if (handleStats) {
+        stats = getStats();
+        if (countStats) {
+            if (won) {
+                if (onStreak) {
+                    stats['winStreak'] += 1;
+                } else {
+                stats['winStreak'] = 1;
+                }
+                stats['wins'] += 1;
+            } else {
+                stats['winStreak'] = 0;
+                stats['giveups'] += 1;
+            }
+            storage.setItem("stats", JSON.stringify(stats));
+        }
+    }
+
+    $('#give-up-btn').style = "display:none;";
+    $('#response').classList.add("gaveup");
+    gameOver = true;
+    const secretBase64 = btoa(unescape(encodeURIComponent(secret)));
+    let response;
+    if (won) {
+        response = `<p><b>You found it in ${Object.keys(guesses).length}!  The secret word is ${secret}</b>.  Feel free to keep entering words if you are curious about the similarity to other words. Click the New game button to start a new game.</p>`
     } else {
-        model = getModel(word);
-        cache[word] = model;
+        response = `<p><b>You gave up!  The secret word is: ${secret}</b>.  Feel free to keep entering words if you are curious about the similarity to other words. Click the New game button to start a new game.</p>`;
     }
-    words_selected.push([word, model.vec]);
-    if (words_selected.length > 2) {
-        words_selected.pop();
+
+    if (handleStats) {
+        const totalGames = stats['wins'] + stats['giveups'] + stats['abandons'];
+        response +=
+            `<br/>
+            Stats: <br/>
+            <table>
+                <tr> <th>First game:</th>                       <td>${stats['firstPlay']}</td>                              </tr>
+                <tr> <th>Total days played:</th>                <td>${totalGames}</td>                                      </tr>
+                <tr> <th>Wins:</th>                             <td>${stats['wins']}</td>                                   </tr>
+                <tr> <th>Win streak:</th>                       <td>${stats['winStreak']}</td>                              </tr>
+                <tr> <th>Give-ups:</th>                         <td>${stats['giveups']}</td>                                </tr>
+                <tr> <th>Did not finish:</th>                   <td>${stats['abandons']}</td>                               </tr>
+                <tr> <th>Total guesses across all games:</th>   <td>${stats['totalGuesses']}</td>                           </tr>
+                <tr> <th>Average guesses across all games:</th> <td>${(stats['totalGuesses'] / totalGames).toFixed(2)}</td> </tr>
+            </table>`;
     }
-    const proj = project_along(words_selected[0][1], words_selected[1][1],
-                               target);
-    console.log(proj);
-*/
+    $('#response').innerHTML = response;
+}
+
+
+/////////////////////////////
+// Display
+/////////////////////////////
+
+function toggleDarkMode(on) {
+    darkMode = on;
+    document.body.classList[on ? 'add' : 'remove']('dark');
+    $("#dark-mode").checked = on;
+    updateGuesses();
+}
+
+function sortGuesses(a, b) {
+    let diff;
+    if (sorting === "similarity") {
+        diff = -(a[0] - b[0]);  // most to least similar by default
+    } else if (sorting === "chrono") {
+        diff = a[3] - b[3];
+    } else if (sorting === "alpha") {
+        diff = a[2] - b[2];
+    } else {
+        console.log("Unknown sorting option: " + sorting);
+    }
+    return sort_forward * diff;
+}
+
+function updateGuesses() {
+    let inner = `<tr><th id="chronoOrder">#</th><th id="alphaOrder">Guess</th><th id="similarityOrder">Similarity</th><th>Getting close?</th></tr>`;
+
+    if (latestGuess !== null) {
+        inner += guessRow(...latestGuess);
+    }
+
+    inner += "<tr><td colspan=4><hr></td></tr>";
+    for (let entry of Object.values(guesses).sort(sortGuesses)) {
+        if (entry !== latestGuess) {
+            inner += guessRow(...entry);
+        }
+    }
+    $('#guesses').innerHTML = inner;
+    $('#chronoOrder').addEventListener('click', event => {
+        if (sorting === "chrono") {
+            sort_forward *= -1;
+        } else {
+            sort_forward = 1;
+        }
+        sorting = "chrono";
+        updateGuesses();
+    });
+    $('#alphaOrder').addEventListener('click', event => {
+        if (sorting === "alpha") {
+            sort_forward *= -1;
+        } else {
+            sort_forward = 1;
+        }
+        sorting = "alpha";
+        updateGuesses();
+    });
+    $('#similarityOrder').addEventListener('click', event => {
+        if (sorting === "similarity") {
+            sort_forward *= -1;
+        } else {
+            sort_forward = 1;
+        }
+        sorting = "similarity";
+        updateGuesses();
+    });
 }
 
 function guessRow(similarity, oldGuess, percentile, guessNumber, guess) {
@@ -162,451 +345,72 @@ function guessRow(similarity, oldGuess, percentile, guessNumber, guess) {
 
 }
 
-function updateLocalTime() {
-    const now = new Date();
-    now.setUTCHours(24, 0, 0, 0);
-
-    $('#localtime').innerHTML = `or ${now.getHours()}:00 your time`;
-}
-
-function solveStory(guesses, puzzleNumber) {
-    const guess_count = guesses.length;
-    if (guess_count == 0) {
-        return `I gave up on Semantle ${puzzleNumber} without even guessing once.`;
-    }
-
-    if (guess_count == 1) {
-        return `I got Semantle ${puzzleNumber} on my first guess!`;
-    }
-
-    let describe = function(similarity, percentile) {
-        let out = `had a similarity of ${similarity.toFixed(2)}`;
-        if (percentile) {
-            out += ` (${percentile}/1000)`;
-        }
-        return out;
-    }
-
-    const guesses_chrono = guesses.slice();
-    guesses_chrono.sort(function(a, b){return a[3]-b[3]});
-
-    let [similarity, old_guess, percentile, guess_number] = guesses_chrono[0];
-    let first_guess = `My first guess ${describe(similarity, percentile)}.`;
-    let first_guess_in_top = !!percentile;
-
-    let first_hit = '';
-    if (!first_guess_in_top) {
-        for (let entry of guesses_chrono) {
-            [similarity, old_guess, percentile, guess_number] = entry;
-            if (percentile) {
-                first_hit = `  My first word in the top 1000 was at guess #${guess_number}.  `;
-                break;
-            }
-        }
-    }
-
-    const penultimate_guess = guesses_chrono[guesses_chrono.length - 2];
-    [similarity, old_guess, percentile, guess_number] = penultimate_guess;
-    const penultimate_guess_msg = `My penultimate guess ${describe(similarity, percentile)}.`;
-
-    return `I solved Semantle #${puzzleNumber} in ${guess_count} guesses. ${first_guess}${first_hit}${penultimate_guess_msg} https://semantle.novalis.org/`;
-}
-
-let Semantle = (function() {
-    async function getSimilarityStory(secret) {
-        const url = "/similarity/" + secret;
-        const response = await fetch(url);
-        try {
-            return await response.json();
-        } catch (e) {
-            return null;
-        }
-    }
-
-    async function getModel(word) {
-        if (cache.hasOwnProperty(word)) {
-            return cache[word];
-        }
-        const url = "/model2/" + secret + "/" + word.replace(/\ /gi, "_");
-        const response = await fetch(url);
-        try {
-            return await response.json();
-        } catch (e) {
-            return null;
-        }
-    }
-
-    async function getNearby(word) {
-        const url = "/nearby/" + word ;
-        const response = await fetch(url);
-        try {
-            return await response.json();
-        } catch (e) {
-            return null;
-        }
-    }
-
-    async function init() {
-        secret = secretWords[puzzleNumber].toLowerCase();
-        const yesterday = secretWords[yesterdayPuzzleNumber].toLowerCase();
-
-        $('#yesterday').innerHTML = `Yesterday's word was <b>"${yesterday}"</b>.`;
-        $('#yesterday2').innerHTML = yesterday;
-
-        $('#lower').checked = storage.getItem("lower") == "true";
-
-        $('#lower').onchange = (e) => {
-            storage.setItem("lower", "" + $('#lower').checked);
+function getStats() {
+    const oldStats = storage.getItem("stats");
+    if (oldStats == null) {
+        const stats = {
+            'winStreak' : 0,
+            'playStreak' : 0,
+            'totalGuesses' : 0,
+            'wins' : 0,
+            'giveups' : 0,
+            'abandons' : 0,
+            'totalPlays' : 0,
         };
+        storage.setItem("stats", JSON.stringify(stats));
+        return stats;
+    } else {
+        const stats = JSON.parse(oldStats);
+        stats['totalPlays'] += 1;
+        return stats;
+    }
+}
 
-        try {
-            const yesterdayNearby = await getNearby(yesterday);
-            const secretBase64 = btoa(unescape(encodeURIComponent(yesterday)));
-            $('#nearbyYesterday').innerHTML = `${yesterdayNearby.join(", ")}, in descending order of closensess. <a href="nearby_1k/${secretBase64}">More?</a>`;
-        } catch (e) {
-            $('#nearbyYesterday').innerHTML = `Coming soon!`;
-        }
-        updateLocalTime();
 
-        try {
-            similarityStory = await getSimilarityStory(secret);
-            $('#similarity-story').innerHTML = `
-Today is puzzle number <b>${puzzleNumber}</b>. The nearest word has a similarity of
-<b>${(similarityStory.top * 100).toFixed(2)}</b>, the tenth-nearest has a similarity of
-${(similarityStory.top10 * 100).toFixed(2)} and the one thousandth nearest word has a
-similarity of ${(similarityStory.rest * 100).toFixed(2)}.
-`;
-        } catch {
-            // we can live without this in the event that something is broken
-        }
+/////////////////////////////
+// Event handlers
+/////////////////////////////
 
-        const storagePuzzleNumber = storage.getItem("puzzleNumber");
-        if (storagePuzzleNumber != puzzleNumber) {
-            storage.removeItem("guesses");
-            storage.removeItem("winState");
-            storage.setItem("puzzleNumber", puzzleNumber);
-        }
+function openRules() {
+    document.body.classList.add('dialog-open', 'rules-open');
+    storage.setItem("readRules", true);
+    $("#rules-close").focus();
+}
 
-        document.querySelectorAll(".dialog-close").forEach((el) => {
-            el.innerHTML = ""
-            el.appendChild($("#x-icon").content.cloneNode(true));
-        });
+function openSettings() {
+    document.body.classList.add('dialog-open', 'settings-open');
+    $("#settings-close").focus();
+}
 
-        if (!storage.getItem("readRules")) {
-            openRules();
-        }
+function setDarkModePreference(on) {
+    storage.setItem("prefersDarkColorScheme", on);
+    darkModeMql.onchange = null;
+    toggleDarkMode(on);
+}
 
-        $("#rules-button").addEventListener('click', openRules);
-        $("#settings-button").addEventListener('click', openSettings);
-
-        document.querySelectorAll(".dialog-underlay, .dialog-close, #capitalized-link").forEach((el) => {
-            el.addEventListener('click', () => {
-                document.body.classList.remove('dialog-open', 'rules-open', 'settings-open');
-            });
-        });
-
-        document.querySelectorAll(".dialog").forEach((el) => {
-            el.addEventListener("click", (event) => {
-                // prevents click from propagating to the underlay, which closes the rules
-                event.stopPropagation();
-            });
-        });
-
-        $("#dark-mode").addEventListener('click', function(event) {
-            storage.setItem("prefersDarkColorScheme", event.target.checked);
-            darkModeMql.onchange = null;
-            darkMode = event.target.checked;
-            toggleDarkMode(darkMode);
-            updateGuesses();
-        });
-
-        toggleDarkMode(darkMode);
-
-        if (storage.getItem("prefersDarkColorScheme") === null) {
-            $("#dark-mode").checked = false;
-            $("#dark-mode").indeterminate = true;
-        }
-
-        $('#give-up-btn').addEventListener('click', function(event) {
-            if (!gameOver) {
-                if (confirm("Are you sure you want to give up?")) {
-                    endGame(false, true);
-                }
-            }
-        });
-
-        $('#form').addEventListener('submit', async function(event) {
-            event.preventDefault();
-            if (secretVec === null) {
-                secretVec = (await getModel(secret)).vec;
-            }
-            $('#guess').focus();
-            $('#error').textContent = "";
-            let guess = $('#guess').value.trim().replace("!", "").replace("*", "");
-            if (!guess) {
-                return false;
-            }
-            if ($("#lower").checked) {
-                guess = guess.toLowerCase();
-            }
-
-            if (typeof unbritish !== 'undefined' && unbritish.hasOwnProperty(guess)) {
-                guess = unbritish[guess];
-            }
-
-            if (guess[0].toLowerCase() != guess[0]) {
-                caps += 1;
-            }
-            if (caps >= 2 && (caps / guesses.length) > 0.4 && !warnedCaps) {
-                warnedCaps = true;
-                $("#lower").checked = confirm("You're entering a lot of words with initial capital letters.  This is probably not what you want to do, and it's probably caused by your phone keyboard ignoring the autocapitalize setting.  \"Nice\" is a city. \"nice\" is an adjective.  Do you want me to downcase your guesses for you?");
-                storage.setItem("lower", "true");
-            }
-
-            $('#guess').value = "";
-
-            const guessData = await getModel(guess);
-            if (!guessData) {
-                $('#error').textContent = `I don't know the word ${guess}.`;
-                return false;
-            }
-
-            let percentile = guessData.percentile;
-
-            const guessVec = guessData.vec;
-
-            cache[guess] = guessData;
-
-            let similarity = getCosSim(guessVec, secretVec) * 100.0;
-            if (!guessed.has(guess)) {
-                if (!gameOver) {
-                    guessCount += 1;
-                }
-                guessed.add(guess);
-
-                const newEntry = [similarity, guess, percentile, guessCount];
-                guesses.push(newEntry);
-
-                if (handleStats) {
-                    const stats = getStats();
-                    if (!gameOver) {
-                        stats['totalGuesses'] += 1;
-                    }
-                    storage.setItem('stats', JSON.stringify(stats));
-                }
-            }
-            guesses.sort(function(a, b){return b[0]-a[0]});
-
-            if (!gameOver) {
-                saveGame(-1, -1);
-            }
-
-            chrono_forward = 1;
-
-            latestGuess = guess;
-            updateGuesses();
-
-            firstGuess = false;
-            if (guess.toLowerCase() === secret && !gameOver) {
-                endGame(true, true);
-            }
-            return false;
-        });
-
-        const winState = storage.getItem("winState");
-        if (winState != null) {
-            guesses = JSON.parse(storage.getItem("guesses"));
-            for (let guess of guesses) {
-                guessed.add(guess[1]);
-            }
-            guessCount = guessed.size;
-            latestGuess = "";
-            updateGuesses();
-            if (winState != -1) {
-                endGame(winState > 0, false);
-            }
+function giveUp() {
+    if (!gameOver) {
+        if (confirm("Are you sure you want to give up?")) {
+            endGame(false, true);
         }
     }
+}
 
-    function openRules() {
-        document.body.classList.add('dialog-open', 'rules-open');
-        storage.setItem("readRules", true);
-        $("#rules-close").focus();
-    }
 
-    function openSettings() {
-        document.body.classList.add('dialog-open', 'settings-open');
-        $("#settings-close").focus();
-    }
+/////////////////////////////
+// Other
+/////////////////////////////
 
-    function updateGuesses() {
-        let inner = `<tr><th id="chronoOrder">#</th><th id="alphaOrder">Guess</th><th id="similarityOrder">Similarity</th><th>Getting close?</th></tr>`;
-        /* This is dumb: first we find the most-recent word, and put
-           it at the top.  Then we do the rest. */
-        for (let entry of guesses) {
-            let [similarity, oldGuess, percentile, guessNumber] = entry;
-            if (oldGuess == latestGuess) {
-                inner += guessRow(similarity, oldGuess, percentile, guessNumber, latestGuess);
-            }
-        }
-        inner += "<tr><td colspan=4><hr></td></tr>";
-        for (let entry of guesses) {
-            let [similarity, oldGuess, percentile, guessNumber] = entry;
-            if (oldGuess != latestGuess) {
-                inner += guessRow(similarity, oldGuess, percentile, guessNumber);
-            }
-        }
-        $('#guesses').innerHTML = inner;
-        $('#chronoOrder').addEventListener('click', event => {
-            guesses.sort(function(a, b){return chrono_forward * (a[3]-b[3])});
-            chrono_forward *= -1;
-            updateGuesses();
-        });
-        $('#alphaOrder').addEventListener('click', event => {
-            guesses.sort(function(a, b){return a[1].localeCompare(b[1])});
-            chrono_forward = 1;
-            updateGuesses();
-        });
-        $('#similarityOrder').addEventListener('click', event => {
-            guesses.sort(function(a, b){return b[0]-a[0]});
-            chrono_forward = 1;
-            updateGuesses();
-        });
-    }
+function $(q) {
+    return document.querySelector(q);
+}
 
-    function toggleDarkMode(on) {
-        document.body.classList[on ? 'add' : 'remove']('dark');
-        const darkModeCheckbox = $("#dark-mode");
-        // this runs before the DOM is ready, so we need to check
-        if (darkModeCheckbox) {
-            darkModeCheckbox.checked = on;
-        }
-    }
 
-    function checkMedia() {
-        const storagePrefersDarkColorScheme = storage.getItem("prefersDarkColorScheme");
-        if (storagePrefersDarkColorScheme === 'true' || storagePrefersDarkColorScheme === 'false') {
-            darkMode = storagePrefersDarkColorScheme === 'true';
-        } else {
-            darkMode = darkModeMql.matches;
-            darkModeMql.onchange = (e) => {
-                darkMode = e.matches;
-                toggleDarkMode(darkMode)
-                updateGuesses();
-            }
-        }
-        toggleDarkMode(darkMode);
-    }
-
-    function saveGame(guessCount, winState) {
-        // If we are in a tab still open from yesterday, we're done here.
-        // Don't save anything because we may overwrite today's game!
-        let savedPuzzleNumber = storage.getItem("puzzleNumber");
-        if (savedPuzzleNumber != puzzleNumber) { return }
-
-        storage.setItem("winState", winState);
-        storage.setItem("guesses", JSON.stringify(guesses));
-    }
-
-    function getStats() {
-        const oldStats = storage.getItem("stats");
-        if (oldStats == null) {
-            const stats = {
-                'firstPlay' : puzzleNumber,
-                'lastEnd' : puzzleNumber - 1,
-                'lastPlay' : puzzleNumber,
-                'winStreak' : 0,
-                'playStreak' : 0,
-                'totalGuesses' : 0,
-                'wins' : 0,
-                'giveups' : 0,
-                'abandons' : 0,
-                'totalPlays' : 0,
-            };
-            storage.setItem("stats", JSON.stringify(stats));
-            return stats;
-        } else {
-            const stats = JSON.parse(oldStats);
-            if (stats['lastPlay'] != puzzleNumber) {
-                const onStreak = (stats['lastPlay'] == puzzleNumber - 1);
-                if (onStreak) {
-                    stats['playStreak'] += 1;
-                }
-                stats['totalPlays'] += 1;
-                if (stats['lastEnd'] != puzzleNumber - 1) {
-                    stats['abandons'] += 1;
-                }
-                stats['lastPlay'] = puzzleNumber;
-            }
-            return stats;
-        }
-    }
-
-    function endGame(won, countStats) {
-        let stats;
-        if (handleStats) {
-            stats = getStats();
-            if (countStats) {
-                const onStreak = (stats['lastEnd'] == puzzleNumber - 1);
-
-                stats['lastEnd'] = puzzleNumber;
-                if (won) {
-                    if (onStreak) {
-                        stats['winStreak'] += 1;
-                    } else {
-                    stats['winStreak'] = 1;
-                    }
-                    stats['wins'] += 1;
-                } else {
-                    stats['winStreak'] = 0;
-                    stats['giveups'] += 1;
-                }
-                storage.setItem("stats", JSON.stringify(stats));
-            }
-        }
-
-        $('#give-up-btn').style = "display:none;";
-        $('#response').classList.add("gaveup");
-        gameOver = true;
-        const secretBase64 = btoa(unescape(encodeURIComponent(secret)));
-        let response;
-        if (won) {
-            response = `<p><b>You found it in ${guesses.length}!  The secret word is ${secret}</b>.  Feel free to keep entering words if you are curious about the similarity to other words. <a href="javascript:share();">Share</a> and play again tomorrow.  You can see the nearest words <a href="nearby_1k/${secretBase64}">here</a>.</p>`
-        } else {
-            response = `<p><b>You gave up!  The secret word is: ${secret}</b>.  Feel free to keep entering words if you are curious about the similarity to other words.  You can see the nearest words <a href="nearby_1k/${secretBase64}">here</a>.</p>`;
-        }
-
-        if (handleStats) {
-            const totalGames = stats['wins'] + stats['giveups'] + stats['abandons'];
-            response += `<br/>
-Stats (since we started recording, on day 23): <br/>
-<table>
-<tr><th>First game:</th><td>${stats['firstPlay']}</td></tr>
-<tr><th>Total days played:</th><td>${totalGames}</td></tr>
-<tr><th>Wins:</th><td>${stats['wins']}</td></tr>
-<tr><th>Win streak:</th><td>${stats['winStreak']}</td></tr>
-<tr><th>Give-ups:</th><td>${stats['giveups']}</td></tr>
-<tr><th>Did not finish:</th><td>${stats['abandons']}</td></tr>
-<tr><th>Total guesses across all games:</th><td>${stats['totalGuesses']}</td></tr>
-<tr><th>Average guesses across all games:</th><td>${(stats['totalGuesses'] / totalGames).toFixed(2)}</td></tr>
-</table>
-`;
-        }
-        $('#response').innerHTML = response;
-
-        if (countStats) {
-            saveGame(guesses.length, won ? 1 : 0);
-        }
-    }
-
-    return {
-        init: init,
-        checkMedia: checkMedia,
-    };
-})();
-
-// do this when the file loads instead of waiting for DOM to be ready to avoid
-// a flash of unstyled content
-Semantle.checkMedia();
-
-window.addEventListener('load', async () => { Semantle.init() });
+window.addEventListener('load', init);
+window.$ = $;
+window.makeGuess = makeGuess;
+window.giveUp = giveUp;
+window.startGame = startGame;
+window.openRules = openRules;
+window.openSettings = openSettings;
+window.setDarkModePreference = setDarkModePreference;

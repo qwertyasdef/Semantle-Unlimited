@@ -121,7 +121,8 @@ h2 {
 }
 
 #guess-wrapper input,
-#give-up-btn {
+#give-up-btn,
+#new-game-btn {
     height: 2.5em;
     padding: .5em;
 }

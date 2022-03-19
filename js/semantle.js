@@ -104,6 +104,7 @@ function startGame() {
         one thousandth nearest word has a similarity of ${(similarityStory.rest * 100).toFixed(2)}.`;
     $('#response').innerHTML = "";
     $('#response').classList.remove('gaveup');
+    $('#give-up-btn').style = "display:inline-block;";
     updateGuesses();
 }
 

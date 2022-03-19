@@ -103,6 +103,7 @@ function startGame() {
         the tenth-nearest has a similarity of ${(similarityStory.top10 * 100).toFixed(2)}, and the
         one thousandth nearest word has a similarity of ${(similarityStory.rest * 100).toFixed(2)}.`;
     $('#response').innerHTML = "";
+    $('#response').classList.remove('gaveup');
     updateGuesses();
 }
 

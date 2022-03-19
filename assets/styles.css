@@ -29,6 +29,10 @@ body.settings-open #settings-underlay {
     display: block;
 }
 
+body.warning-open #warning-underlay {
+    display: block;
+}
+
 header {
     align-items: center;
     display: flex;

@@ -76,6 +76,37 @@
         </div>
       </div>
     </div>
+    <div class="dialog-underlay" id="warning-underlay">
+      <div class="dialog" id="warning" aria-labelledby="warning-heading" aria-modal="true" role="dialog">
+        <div class="dialog-content" id="warning-content">
+          <h3 id="warning-heading">Welcome to Semantle Unlimited!</h3>
+          <p>
+            Unlike the original, this version is run without a server.
+            That means that all the computation is done locally on your
+            device. This causes a few notable differences.
+          </p>
+          <p>
+            First, the game will start by downloading around 250 MB of
+            data, which can take a few minutes. If you're on a metered
+            connection, you may want to leave now.
+          </p>
+          <p>
+            Second, only regular, lowercase words with no punctuation
+            are included to make the data more manageable. Therefore,
+            proper nouns and short phrases do not work. Your guesses
+            will be automatically convereted to lowercase, so if you
+            guess "Nice", you are actually asking about the regular
+            word "nice" and not the city
+            <a href="https://en.wikipedia.org/wiki/Nice">Nice</a>.
+          </p>
+          <p>
+            Click Ok to continue.
+          </p>
+          <button id="warning-close" aria-label="Close" onclick="closeWarning()">Ok</button>
+        </div>
+      </div>
+    </div>
+    <div id="loading"><label for="loading-progress">Loading</label> <progress id="loading-progress"></progress></div>
     <p id="similarity-story"> </p>
     <div id="error" aria-live="assertive"></div>
     <div id="guess-wrapper">

@@ -25,7 +25,7 @@ let darkMode = false;
 let handleStats = false;  // not implemented
 
 
-async function init() {
+function init() {
     // set up UI
     document.querySelectorAll(".dialog-close").forEach((el) => {
         el.innerHTML = ""
@@ -62,11 +62,21 @@ async function init() {
         }
     }
 
-    // set up game
-    model.init();
+    // show the warning
+    document.body.classList.add('dialog-open', 'warning-open');
+    $("#warning-close").focus();
+}
+
+// download the data
+async function download() {
+    await model.init((completed, total) => {
+        $("#loading-progress").value = completed;
+        $("#loading-progress").max = total;
+    });
     const response = await fetch('data/secret_words.txt');
     const text = await response.text();
     secretWords = text.split('\n');
+    $("#loading").innerHTML = "";
     startGame();
 }
 
@@ -81,17 +91,18 @@ let guesses = {};
 let latestGuess = null;
 let similarityStory = null;
 
-async function startGame() {
+function startGame() {
     gameOver = false;
     secret = secretWords[Math.floor(Math.random() * secretWords.length)];
     window.secret = secret;  // for debugging
     guesses = {};
     latestGuess = null;
-    similarityStory = await model.getSimilarityStory(secret);
+    similarityStory = model.getSimilarityStory(secret);
     $('#similarity-story').innerHTML =
         `The nearest word has a similarity of <b>${(similarityStory.top * 100).toFixed(2)}</b>,
         the tenth-nearest has a similarity of ${(similarityStory.top10 * 100).toFixed(2)}, and the
         one thousandth nearest word has a similarity of ${(similarityStory.rest * 100).toFixed(2)}.`;
+    $('#response').innerHTML = "";
     updateGuesses();
 }
 
@@ -163,7 +174,7 @@ async function startGame() {
 //     return false;
 // });
 
-async function makeGuess(guess) {
+function makeGuess(guess) {
     $('#guess').value = "";
     $('#guess').focus();
     $('#error').textContent = "";
@@ -171,7 +182,7 @@ async function makeGuess(guess) {
     guess = guess.toLowerCase();
 
     if (!(guess in guesses)) {
-        const [similarity, percentile] = await model.getSimilarity(secret, guess);
+        const [similarity, percentile] = model.getSimilarity(secret, guess);
         if (similarity === null) {
             $('#error').textContent = `I don't know the word ${guess}.`;
             return false;
@@ -371,6 +382,11 @@ function getStats() {
 // Event handlers
 /////////////////////////////
 
+function closeWarning() {
+    download();
+    document.body.classList.remove('dialog-open', 'warning-open');
+}
+
 function openRules() {
     document.body.classList.add('dialog-open', 'rules-open');
     storage.setItem("readRules", true);
@@ -408,6 +424,7 @@ function $(q) {
 
 window.addEventListener('load', init);
 window.$ = $;
+window.closeWarning = closeWarning;
 window.makeGuess = makeGuess;
 window.giveUp = giveUp;
 window.startGame = startGame;

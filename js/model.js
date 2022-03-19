@@ -1,11 +1,106 @@
-let sql;
+const model = {};
+const hints = {};
+const hint_similarities = {};
 
 
-async function init() {
-    sql = await initSqlJs({
+/////////////////////////////
+// Load data
+/////////////////////////////
+
+async function init(onProgress) {
+    const sql = await initSqlJs({
         locateFile: file => `./js/sqljs-wasm/${file}`
     });
+
+    // fetch all files in parallel, then join at the end
+    const promises = []
+
+    // track progress
+    let total = 0;
+    let completed = 0;
+
+    // Turn the fetch response into a Uint8Array in a way that allows tracking progress
+    const readResponse = async (response) => {
+        const size = Number(response.headers.get("Content-Length"));
+        total += size;
+
+        const result = new Uint8Array(size);
+        let pointer = 0;
+
+        const reader = response.body.getReader();
+        while (true) {
+            const {value, done} = await reader.read();
+            if (done) {
+                break;
+            }
+            result.set(value, pointer);
+            pointer += value.length;
+            completed += value.length;
+            onProgress(completed, total);
+        }
+
+        return result;
+    };
+
+    // model
+    for (const letterRange of ["a-c", "d-h", "i-o", "p-r", "s-z"]) {
+        const wordVecPromise = fetch(`data/word2vec_${letterRange}.db`)
+        .then(readResponse)
+        .then(file => {
+            const db = new sql.Database(file);
+            const results = db.exec("SELECT * FROM word2vec")[0].values;
+            for (const [word, vec] of results) {
+                model[word] = blobToVector(vec);
+            }
+        });
+        promises.push(wordVecPromise);
+    }
+
+    // hints
+    const hintsPromise = fetch("data/hints.db")
+    .then(readResponse)
+    .then(file => {
+        const db = new sql.Database(file);
+        const results = db.exec("SELECT * FROM hints")[0].values;
+        for (const tuple of results) {
+            hints[tuple[0]] = tuple.slice(1);
+        }
+    });
+    promises.push(hintsPromise);
+
+    // hint similarities
+    const similaritiesPromise = fetch("data/hint_similarities.db")
+    .then(readResponse)
+    .then(file => {
+        const db = new sql.Database(file);
+        const results = db.exec("SELECT * FROM similarities")[0].values;
+        for (const tuple of results) {
+            const word = tuple.shift();
+            for (let i = 0; i < tuple.length; i++) {
+                tuple[i] = new DataView(tuple[i].buffer).getFloat32(0, true);
+            }
+            hint_similarities[word] = tuple;
+        }
+    });
+    promises.push(similaritiesPromise);
+
+    // join all promises
+    return Promise.all(promises);
 }
+
+function blobToVector(blob) {
+    const dv = new DataView(blob.buffer);
+    const vec = []
+    for (let i = 0; i < 300; i++) {
+        vec[i] = dv.getFloat32(i*4, true);
+    }
+    return vec
+}
+
+
+/////////////////////////////
+// Vector math
+/////////////////////////////
 
 function mag(a) {
     return Math.sqrt(a.reduce(function(sum, val) {
@@ -24,79 +119,41 @@ function getCosSim(f1, f2) {
 }
 
 
-function blobToVector(blob) {
-    const dv = new DataView(blob.buffer);
-    const vec = []
-    for (let i = 0; i < 300; i++) {
-        vec[i] = dv.getFloat32(i*4, true);
-    }
-    return vec
-}
+/////////////////////////////
+// Helpers
+/////////////////////////////
 
-async function getVector(word) {
-    let range;
-    if ("abc".includes(word[0])) {
-        range = "a-c";
-    } else if ("defgh".includes(word[0])) {
-        range = "d-h";
-    } else if ("ijklmno".includes(word[0])) {
-        range = "i-o";
-    } else if ("pqr".includes(word[0])) {
-        range = "p-r";
-    } else if ("stuvwxyz".includes(word[0])) {
-        range = "s-z";
-    } else {
-        return null;
-    }
-    const path = `data/word2vec_${range}.db`;
-    const response = await fetch(path);
-    const file = new Uint8Array(await response.arrayBuffer());
-    const db = new sql.Database(file);
-    const result = db.exec("SELECT vec FROM word2vec WHERE word = ?", [word]);
-    if (result.length == 0) {
-        return null;
-    }
-    const blob = result[0].values[0][0];
-    const vec = blobToVector(blob);
-    db.close();
-    return vec;
-}
-
-async function getPercentile(secret, guess) {
-    const file = new Uint8Array(await (await fetch("data/hints.db")).arrayBuffer());
-    const db = new sql.Database(file);
-    const hints = db.exec("SELECT * FROM hints WHERE secret = ?", [secret])[0].values[0].slice(1);
-    const index = hints.indexOf(guess);
-    db.close();
+function getPercentile(secret, guess) {
+    const index = hints[secret].indexOf(guess);
     return index === -1 ? null : index + 1;
 }
 
 
-async function getSimilarityStory(word) {
-    const file = new Uint8Array(await (await fetch("data/hint_similarities.db")).arrayBuffer());
-    const db = new sql.Database(file);
-    const similarities = db.exec("SELECT * FROM similarities WHERE secret = ?", [word])[0].values[0].slice(1);
-    db.close();
+/////////////////////////////
+// Game functions
+/////////////////////////////
+
+function getSimilarityStory(word) {
     return {
-        top: new DataView(similarities[998].buffer).getFloat32(0, true),
-        top10: new DataView(similarities[989].buffer).getFloat32(0, true),
-        rest: new DataView(similarities[0].buffer).getFloat32(0, true)
+        top: hint_similarities[word][998],
+        top10: hint_similarities[word][989],
+        rest: hint_similarities[word][0]
     };
 }
 
-async function getSimilarity(secret, guess) {
+function getSimilarity(secret, guess) {
     if (secret === guess) {
-        return [1.0, 1000];
+        return [100, 1000];
     }
 
-    const secret_vec = await getVector(secret);
-    const guess_vec = await getVector(guess);
-    if (secret_vec === null || guess_vec === null) {
+    const secret_vec = model[secret];
+    const guess_vec = model[guess];
+    if (guess_vec === null) {
         return [null, null];
     }
 
     const similarity = getCosSim(secret_vec, guess_vec) * 100;
-    const percentile = await getPercentile(secret, guess);
+    const percentile = getPercentile(secret, guess);
     return [similarity, percentile];
 }
 

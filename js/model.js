@@ -3,7 +3,7 @@ let sql;
 
 async function init() {
     sql = await initSqlJs({
-        locateFile: file => `js/sqljs-wasm/${file}`
+        locateFile: file => `./js/sqljs-wasm/${file}`
     });
 }
 

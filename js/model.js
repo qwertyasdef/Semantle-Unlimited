@@ -148,7 +148,7 @@ function getSimilarity(secret, guess) {
 
     const secret_vec = model[secret];
     const guess_vec = model[guess];
-    if (guess_vec === null) {
+    if (guess_vec === undefined) {
         return [null, null];
     }
 

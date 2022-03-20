@@ -1,6 +1,8 @@
-Copied from https://gitlab.com/novalis_dt/semantle.
+Play at https://qwertyasdef.github.io/Semantle-Unlimited/!
 
-Still in the works, not actually unlimited yet.
+Alternatively, download the code and run `python local_server.py` and go to `localhost:8000` in your browser to play locally.
+
+Copied from https://gitlab.com/novalis_dt/semantle.
 
 Original README ↓
 
